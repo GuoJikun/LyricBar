@@ -1,0 +1,26 @@
+{
+    "cSpell.words": [
+        "APPBARDATA",
+        "COLORKEY",
+        "GETTASKBARPOS",
+        "GWLP",
+        "hinst",
+        "Hotspot",
+        "ICONINFO",
+        "lpfn",
+        "lpsz",
+        "lrclib",
+        "lyricbar",
+        "netease",
+        "NOACTIVATE",
+        "NOTIFYICONDATAW",
+        "PAINTSTRUCT",
+        "PCWSTR",
+        "RBUTTONUP",
+        "Smtc",
+        "tlyric",
+        "TOOLWINDOW",
+        "WNDCLASSW",
+        "wndproc"
+    ]
+}
