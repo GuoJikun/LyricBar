@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 mod crash;
 mod log_writer;
 
@@ -57,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     let client = reqwest::Client::builder().build()?;
     let smtc = Smtc::new().await?;
     let overlay = Overlay::new()?;
-    lyricbar::ui::tray::init()?;
+    let tray = lyricbar::ui::tray::spawn_tray()?;
     log::info!("SMTC / 悬浮窗 / 托盘 初始化完成");
 
     let mut engine: Option<LyricEngine> = None;
@@ -65,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
 
     log::info!("进入主循环，开始监听 SMTC");
 
-    loop {
+    while lyricbar::ui::tray::is_running() {
         match smtc.current().await {
             Ok(Some(m)) => {
                 let key = format!("{}\u{1f}\u{1f}{}", m.title, m.artist);
@@ -73,6 +75,8 @@ async fn main() -> anyhow::Result<()> {
 
                 if key != last_key {
                     last_key = key.clone();
+                    let tip = format!("{} - {}", m.title, m.artist);
+                    tray.set_tooltip(&tip);
                     match provider::resolve(&client, &m.title, &m.artist, prefer_netease).await {
                         Ok(Some(lyrics)) => {
                             engine = Some(LyricEngine::new(lyrics));
@@ -100,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
                 if !last_key.is_empty() {
                     last_key = String::new();
                     engine = None;
+                    tray.set_tooltip("LyricBar - 歌词悬浮条");
                 }
                 overlay.set_text("", "");
             }
@@ -108,4 +113,7 @@ async fn main() -> anyhow::Result<()> {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+
+    log::info!("LyricBar 退出");
+    Ok(())
 }
