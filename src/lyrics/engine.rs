@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use crate::lyrics::lrc::Lyrics;
 
-/// Synchronizes a parsed LRC to the playback position and locates the active line.
+/// 将解析后的 LRC 与播放进度同步，并定位当前应显示的歌词行。
 pub struct LyricEngine {
     pub lyrics: Lyrics,
-    /// User-adjustable global offset (added to the position before lookup).
+    /// 用户可调的全局偏移量（在查找当前行之前叠加到播放进度上）。
     pub user_offset: Duration,
 }
 
@@ -17,18 +17,17 @@ impl LyricEngine {
         }
     }
 
-    /// Effective position after applying LRC [offset:] and the user offset.
+    /// 应用 LRC 的 [offset:] 偏移与用户偏移后的有效进度。
     fn adjusted(&self, position: Duration) -> Duration {
         position
             .saturating_add(self.user_offset)
             .saturating_add(Duration::from_millis(self.lyrics.offset_ms.unsigned_abs()))
     }
 
-    /// Index of the active line for `position`, or None before the first timestamp.
+    /// `position` 对应的当前歌词行下标；在第一条时间戳之前返回 None。
     ///
-    /// When a translation line shares the same timestamp as the original (from
-    /// `merge_bilingual`), we return the *first* line of that duplicate group so the
-    /// original text is treated as the active line.
+    /// 当翻译行与原歌词行拥有相同时间戳（来自 `merge_bilingual`）时，
+    /// 我们返回该重复组的第一行，使原歌词文本被视为当前活动行。
     pub fn current_line(&self, position: Duration) -> Option<usize> {
         let adj = self.adjusted(position);
         let mut idx = None;
@@ -48,7 +47,7 @@ impl LyricEngine {
         None
     }
 
-    /// Active line text, or empty string if none.
+    /// 当前活动行文本；若无则返回空字符串。
     pub fn current_text(&self, position: Duration) -> String {
         match self.current_line(position) {
             Some(i) => self.lyrics.lines[i].text.clone(),
@@ -56,7 +55,7 @@ impl LyricEngine {
         }
     }
 
-    /// Active line plus the following line (for bilingual/next-line preview), if any.
+    /// 当前行与下一行（用于双语显示或下一句预览）；若无可用的下一行则为空。
     pub fn current_pair(&self, position: Duration) -> (String, String) {
         match self.current_line(position) {
             Some(i) => {

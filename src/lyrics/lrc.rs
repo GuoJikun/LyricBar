@@ -10,7 +10,7 @@ pub struct LyricLine {
 #[derive(Debug, Clone, Default)]
 pub struct Lyrics {
     pub lines: Vec<LyricLine>,
-    /// LRC [offset:] in milliseconds (signed; applied as an addition to line times)
+    /// LRC 的 [offset:] 字段，单位毫秒（带符号，作为对各行时间的整体偏移量）
     pub offset_ms: i64,
 }
 
@@ -88,7 +88,7 @@ pub fn parse(lrc: &str) -> Lyrics {
     Lyrics { lines, offset_ms }
 }
 
-/// Format a duration back to `[mm:ss.xx]` for re-serializing merged LRC.
+/// 将时长格式化为 `[mm:ss.xx]`，用于重新序列化合并后的 LRC。
 pub fn fmt_time(d: Duration) -> String {
     let total_ms = d.as_millis();
     let min = total_ms / 60000;
@@ -97,7 +97,7 @@ pub fn fmt_time(d: Duration) -> String {
     format!("{:02}:{:02}.{:02}", min, sec, cs)
 }
 
-/// Merge a translation LRC under the matching original lines (by timestamp).
+/// 将翻译 LRC 按时间戳对齐合并到原歌词行下方。
 pub fn merge_bilingual(orig: &str, trans: &str) -> String {
     if trans.trim().is_empty() {
         return orig.to_string();

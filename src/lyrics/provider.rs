@@ -1,10 +1,10 @@
 use crate::lyrics::lrc::Lyrics;
 use crate::lyrics::{lrclib, netease};
 
-/// Resolve lyrics for a track. Tries providers in an order based on the source app.
+/// 为某首歌曲解析歌词。依据源播放器决定各歌词源的尝试顺序。
 ///
-/// * `prefer_netease` — when the active session is NetEase Cloud Music, try it first
-///   so we get the same lyrics (incl. translation) the app itself shows.
+/// * `prefer_netease` —— 当当前会话来自网易云音乐时优先尝试它，
+///   以便拿到与 App 本身显示一致的歌词（含翻译）。
 pub async fn resolve(
     client: &reqwest::Client,
     title: &str,

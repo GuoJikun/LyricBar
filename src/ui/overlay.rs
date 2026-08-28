@@ -1,5 +1,5 @@
-//! Transparent, click-through overlay window rendered with GDI and anchored into the
-//! taskbar via the sysmon `SetParent(Shell_TrayWnd)` technique.
+//! 透明、可点击穿透的悬浮窗口，使用 GDI 渲染，并借助 sysmon 的
+//! `SetParent(Shell_TrayWnd)` 方案锚定到任务栏中。
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -23,10 +23,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::ui::taskbar::{embed_into_taskbar, reposition_in_taskbar};
 
-const KEY_COLOR: windows::Win32::Foundation::COLORREF = windows::Win32::Foundation::COLORREF(0x00FF00FF); // magenta -> transparent
+const KEY_COLOR: windows::Win32::Foundation::COLORREF = windows::Win32::Foundation::COLORREF(0x00FF00FF); // 品红色作为透明色键
 const CLASS_NAME: windows::core::PCWSTR = w!("LyricBarOverlay");
 
-/// Shared, mutable overlay content (updated from the main thread).
+/// 可变的共享悬浮窗内容（由主线程更新）。
 pub struct OverlayState {
     pub text: String,
     pub subtext: String,
@@ -46,12 +46,12 @@ pub struct Overlay {
     state: Arc<Mutex<OverlayState>>,
 }
 
-/// Build a null-terminated UTF-16 vector for GDI APIs.
+/// 为 GDI API 构造以 null 结尾的 UTF-16 字符串。
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Build a COLORREF (0x00BBGGRR) from RGB components.
+/// 由 RGB 分量构造 COLORREF（0x00BBGGRR）。
 fn rgb(r: u8, g: u8, b: u8) -> u32 {
     (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
 }
@@ -162,12 +162,12 @@ fn paint(hwnd: HWND) {
 }
 
 impl Overlay {
-    /// Create the overlay window and spawn its message-loop thread.
+    /// 创建悬浮窗并启动其消息循环线程。
     pub fn new() -> anyhow::Result<Self> {
         let state = Arc::new(Mutex::new(OverlayState::default()));
         let hwnd_slot: Arc<Mutex<Option<usize>>> = Arc::new(Mutex::new(None));
 
-        // Register the window class once.
+        // 仅注册一次窗口类。
         unsafe {
             let hinst = GetModuleHandleW(None).unwrap_or_default();
             let wc = WNDCLASSW {
@@ -204,7 +204,7 @@ impl Overlay {
                 return;
             }
 
-            // Leak an Arc clone into GWLP_USERDATA for the wndproc to read.
+            // 将 Arc 克隆泄漏到 GWLP_USERDATA，供 wndproc 读取。
             let leaked = Arc::into_raw(state_thread.clone());
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, leaked as isize);
 
@@ -223,14 +223,14 @@ impl Overlay {
                 let _ = DispatchMessageW(&msg);
             }
 
-            // Reclaim the leaked Arc so it is dropped at thread exit.
+            // 线程退出前回收泄漏的 Arc，使其正常释放。
             let _ = Arc::from_raw(leaked);
         });
 
         Ok(Self { hwnd: hwnd_slot, state })
     }
 
-    /// Update the displayed text (main line + optional translation line).
+    /// 更新显示的文本（主歌词行 + 可选翻译行）。
     pub fn set_text(&self, text: &str, subtext: &str) {
         {
             let mut s = self.state.lock().unwrap();

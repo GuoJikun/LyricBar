@@ -28,7 +28,7 @@ impl Smtc {
         Ok(Self { manager })
     }
 
-    /// Poll the current session and return its metadata, or None if no session is active.
+    /// 轮询当前会话，返回其元数据；若无活跃会话则返回 None。
     pub async fn current(&self) -> anyhow::Result<Option<MediaMetadata>> {
         let session = self.manager.GetCurrentSession()?;
 

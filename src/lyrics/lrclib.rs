@@ -1,6 +1,6 @@
 use reqwest::Client;
 
-/// Search a track on LRCLib and return its synced (or plain) LRC text.
+/// 在 LRCLib 上检索歌曲，返回其带时间戳的（或纯文本）LRC。
 pub async fn fetch(client: &Client, title: &str, artist: &str) -> anyhow::Result<Option<String>> {
     let resp = client
         .get("https://lrclib.net/api/search")

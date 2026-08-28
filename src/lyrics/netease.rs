@@ -25,7 +25,7 @@ async fn search_id(client: &Client, title: &str, artist: &str) -> anyhow::Result
     Ok(id)
 }
 
-/// Fetch NetEase Cloud Music lyrics (original + translation merged to bilingual LRC).
+/// 获取网易云音乐的歌词（原歌词 + 翻译，合并为双语 LRC）。
 pub async fn fetch(client: &Client, title: &str, artist: &str) -> anyhow::Result<Option<String>> {
     let id = match search_id(client, title, artist).await? {
         Some(i) => i,
