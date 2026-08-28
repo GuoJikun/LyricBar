@@ -8,7 +8,7 @@ use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Shell::{ABM_GETTASKBARPOS, APPBARDATA, SHAppBarMessage};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, FindWindowW, GetWindowRect, MoveWindow, SetParent,
+    FindWindowExW, FindWindowW, GetParent, GetWindowRect, MoveWindow, SetParent,
 };
 
 /// 悬浮窗在 DPI 缩放前的逻辑尺寸（基于 96 dpi 的像素）。
@@ -20,9 +20,26 @@ pub fn embed_into_taskbar(hwnd: HWND) -> bool {
     unsafe {
         let taskbar = match FindWindowW(w!("Shell_TrayWnd"), None) {
             Ok(t) if !t.is_invalid() => t,
-            _ => return false,
+            _ => {
+                log::error!("[taskbar] 嵌入: 未找到 Shell_TrayWnd!");
+                return false;
+            }
         };
-        let _ = SetParent(hwnd, Some(taskbar));
+        let result = SetParent(hwnd, Some(taskbar));
+        log::info!("[taskbar] 嵌入: SetParent 返回 {:?}", result);
+
+        if let Ok(parent) = GetParent(hwnd) {
+            if parent == taskbar {
+                log::info!("[taskbar] 嵌入: 验证通过 - 父窗口是 Shell_TrayWnd");
+            } else {
+                log::error!(
+                    "[taskbar] 嵌入: 警告 - 父窗口不匹配! 期望 {:?}, 实际 {:?}",
+                    taskbar, parent
+                );
+            }
+        } else {
+            log::error!("[taskbar] 嵌入: GetParent 失败");
+        }
         true
     }
 }
@@ -54,13 +71,21 @@ pub fn reposition_in_taskbar(hwnd: HWND) {
                 let mut r = RECT::default();
                 if GetWindowRect(t, &mut r).is_ok() {
                     let mut lt = POINT { x: r.left, y: r.top };
+                    let mut rb = POINT { x: r.right, y: r.bottom };
                     let _ = ScreenToClient(taskbar, &mut lt);
-                    (lt.x, lt.y, r.bottom - r.top)
+                    let _ = ScreenToClient(taskbar, &mut rb);
+                    (lt.x, lt.y, rb.y - lt.y)
                 } else {
-                    (abd.rc.right, abd.rc.top, abd.rc.bottom - abd.rc.top)
+                    let mut pt = POINT { x: abd.rc.right, y: abd.rc.top };
+                    let _ = ScreenToClient(taskbar, &mut pt);
+                    (pt.x, pt.y, abd.rc.bottom - abd.rc.top)
                 }
             }
-            _ => (abd.rc.right, abd.rc.top, abd.rc.bottom - abd.rc.top),
+            _ => {
+                let mut pt = POINT { x: abd.rc.right, y: abd.rc.top };
+                let _ = ScreenToClient(taskbar, &mut pt);
+                (pt.x, pt.y, abd.rc.bottom - abd.rc.top)
+            }
         };
 
         let (x, y) = if horizontal {
@@ -74,6 +99,10 @@ pub fn reposition_in_taskbar(hwnd: HWND) {
             (bottom.x / 2 - width / 2, ty - height)
         };
 
+        log::debug!(
+            "[taskbar] 重定位: 位置({}, {}), 尺寸 {}x{}, 托盘=({},{} {}x{})",
+            x, y, width, height, tx, ty, 0, th
+        );
         let _ = MoveWindow(hwnd, x, y, width, height, true);
     }
 }
