@@ -1,6 +1,7 @@
 //! 透明、可点击穿透的悬浮窗口，使用 GDI 渲染，并借助 sysmon 的
 //! `SetParent(Shell_TrayWnd)` 方案锚定到任务栏中。
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -25,6 +26,9 @@ use crate::ui::taskbar::{embed_into_taskbar, reposition_in_taskbar};
 
 const KEY_COLOR: windows::Win32::Foundation::COLORREF = windows::Win32::Foundation::COLORREF(0x00FF00FF); // 品红色作为透明色键
 const CLASS_NAME: windows::core::PCWSTR = w!("LyricBarOverlay");
+
+/// 我们写入 GWLP_USERDATA 的 Arc 指针地址，用于绘制前校验是否被外部覆盖。
+static EXPECTED_USERDATA: AtomicUsize = AtomicUsize::new(0);
 
 /// 可变的共享悬浮窗内容（由主线程更新）。
 pub struct OverlayState {
@@ -57,7 +61,16 @@ fn rgb(r: u8, g: u8, b: u8) -> u32 {
 }
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    match msg {
+    let label = match msg {
+        WM_PAINT => Some("WM_PAINT"),
+        WM_TIMER => Some("WM_TIMER"),
+        WM_DESTROY => Some("WM_DESTROY"),
+        _ => None,
+    };
+    if let Some(l) = label {
+        log::debug!("wndproc 收到消息: {l} (0x{msg:04X})");
+    }
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match msg {
         WM_PAINT => {
             paint(hwnd);
             LRESULT(0)
@@ -68,20 +81,41 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         WM_DESTROY => LRESULT(0),
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }));
+    match r {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("wndproc panic @msg={label:?}: {e:?}");
+            LRESULT(0)
+        }
     }
 }
 
 fn paint(hwnd: HWND) {
     unsafe {
-    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Arc<Mutex<OverlayState>>;
-    let state = if ptr.is_null() {
-        None
-    } else {
-        Some(&*ptr)
-    };
-
+    // 必须先 BeginPaint/EndPaint，否则窗口会持续收到 WM_PAINT。
     let mut ps = PAINTSTRUCT::default();
-    let hdc = BeginPaint(hwnd, &mut ps);
+    let hdc0 = BeginPaint(hwnd, &mut ps);
+
+    let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize;
+    let expected = EXPECTED_USERDATA.load(Ordering::Relaxed);
+    if raw == 0 {
+        log::warn!("paint: GWLP_USERDATA 为空，跳过绘制");
+        let _ = EndPaint(hwnd, &mut ps);
+        return;
+    }
+    if expected != 0 && raw != expected {
+        log::error!(
+            "paint: GWLP_USERDATA 被外部覆盖 (期望 {expected:#x}, 实际 {raw:#x})，跳过绘制以避免崩溃"
+        );
+        let _ = EndPaint(hwnd, &mut ps);
+        return;
+    }
+    let ptr = raw as *const Mutex<OverlayState>;
+    let state = &*ptr;
+    log::debug!("paint: 开始绘制，USERDATA={raw:#x}");
+
+    let hdc = hdc0;
     let mut rect = RECT::default();
     let _ = GetClientRect(hwnd, &mut rect);
 
@@ -111,10 +145,9 @@ fn paint(hwnd: HWND) {
     );
     let old = SelectObject(hdc, font.into());
 
-    if let Some(state) = state {
-        let guard = state.lock().unwrap();
-        let text = &guard.text;
-        let sub = &guard.subtext;
+    let guard = state.lock().unwrap();
+    let text = &guard.text;
+    let sub = &guard.subtext;
 
         if sub.is_empty() {
             let mut wide = to_wide(text);
@@ -153,8 +186,6 @@ fn paint(hwnd: HWND) {
                 DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS,
             );
         }
-    }
-
     let _ = SelectObject(hdc, old);
     let _ = DeleteObject(font.into());
     let _ = EndPaint(hwnd, &mut ps);
@@ -207,13 +238,23 @@ impl Overlay {
             // 将 Arc 克隆泄漏到 GWLP_USERDATA，供 wndproc 读取。
             let leaked = Arc::into_raw(state_thread.clone());
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, leaked as isize);
+            EXPECTED_USERDATA.store(leaked as usize, Ordering::Relaxed);
+            log::debug!("overlay: 窗口创建成功 hwnd={:?}，USERDATA={:#x}", hwnd, leaked as usize);
 
             let _ = SetLayeredWindowAttributes(hwnd, KEY_COLOR, 0, LWA_COLORKEY);
             let _ = ShowWindow(hwnd, SW_SHOW);
+            log::debug!("overlay: SetLayeredWindowAttributes / ShowWindow 完成");
 
-            embed_into_taskbar(hwnd);
-            reposition_in_taskbar(hwnd);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                embed_into_taskbar(hwnd);
+            }));
+            log::debug!("overlay: embed_into_taskbar 完成");
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                reposition_in_taskbar(hwnd);
+            }));
+            log::debug!("overlay: reposition_in_taskbar 完成");
             SetTimer(Some(hwnd), 1, 500, None);
+            log::debug!("overlay: SetTimer 完成，进入消息循环");
 
             *hwnd_slot_thread.lock().unwrap() = Some(hwnd.0 as usize);
 
@@ -240,6 +281,7 @@ impl Overlay {
         if let Some(v) = *self.hwnd.lock().unwrap() {
             let hwnd = HWND(v as *mut std::ffi::c_void);
             if !hwnd.is_invalid() {
+                log::debug!("set_text: 触发重绘主={:?} 副={:?}", text, subtext);
                 unsafe {
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
