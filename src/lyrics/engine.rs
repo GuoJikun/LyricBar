@@ -18,10 +18,16 @@ impl LyricEngine {
     }
 
     /// 应用 LRC 的 [offset:] 偏移与用户偏移后的有效进度。
+    ///
+    /// `[offset:+N]` 表示歌词整体延后 N 毫秒，需将播放进度加上 N；
+    /// `[offset:-N]` 表示歌词整体提前 N 毫秒，需将播放进度减去 N。
     fn adjusted(&self, position: Duration) -> Duration {
-        position
-            .saturating_add(self.user_offset)
-            .saturating_add(Duration::from_millis(self.lyrics.offset_ms.unsigned_abs()))
+        let pos = position.saturating_add(self.user_offset);
+        if self.lyrics.offset_ms >= 0 {
+            pos.saturating_add(Duration::from_millis(self.lyrics.offset_ms as u64))
+        } else {
+            pos.saturating_sub(Duration::from_millis((-self.lyrics.offset_ms) as u64))
+        }
     }
 
     /// `position` 对应的当前歌词行下标；在第一条时间戳之前返回 None。

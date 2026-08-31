@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -104,7 +103,7 @@ pub fn merge_bilingual(orig: &str, trans: &str) -> String {
     }
     let o = parse(orig);
     let t = parse(trans);
-    let tmap: HashMap<u128, &str> = t
+    let tentries: Vec<(u128, &str)> = t
         .lines
         .iter()
         .map(|l| (l.time.as_millis(), l.text.as_str()))
@@ -113,9 +112,11 @@ pub fn merge_bilingual(orig: &str, trans: &str) -> String {
     for l in &o.lines {
         out.push_str(&format!("[{}]{}", fmt_time(l.time), l.text));
         out.push('\n');
-        if let Some(tr) = tmap.get(&l.time.as_millis()) {
-            if !tr.is_empty() && tr != &l.text.as_str() {
+        let key = l.time.as_millis();
+        for &(tkey, tr) in &tentries {
+            if tkey == key && !tr.is_empty() && tr != l.text.as_str() {
                 out.push_str(&format!("[{}]{}\n", fmt_time(l.time), tr));
+                break;
             }
         }
     }

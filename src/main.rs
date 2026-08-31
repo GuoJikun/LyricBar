@@ -3,7 +3,7 @@
 mod crash;
 mod log_writer;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lyricbar::lyrics::engine::LyricEngine;
 use lyricbar::lyrics::provider;
@@ -65,6 +65,11 @@ async fn main() -> anyhow::Result<()> {
     let mut engine: Option<LyricEngine> = None;
     let mut last_key = String::new();
 
+    // 自行追踪播放进度，弥补部分播放器 SMTC Position() 不更新的问题
+    let mut tracked_position = Duration::ZERO;
+    let mut track_anchor: Option<Instant> = None; // 上次校准时刻
+    let mut last_status_playing = false;
+
     log::info!("进入主循环，开始监听 SMTC");
 
     while lyricbar::ui::tray::is_running() {
@@ -72,11 +77,14 @@ async fn main() -> anyhow::Result<()> {
             Ok(Some(m)) => {
                 let key = format!("{}\u{1f}\u{1f}{}", m.title, m.artist);
                 let prefer_netease = m.source_app.to_lowercase().contains("netease");
+                let is_playing = m.playback_status.is_active();
 
                 if key != last_key {
                     last_key = key.clone();
                     let tip = format!("{} - {}", m.title, m.artist);
                     tray.set_tooltip(&tip);
+                    log::info!("[song] changed to: {} — {} (position={:?}, duration={:?}, status={:?})",
+                        m.title, m.artist, m.position, m.duration, m.playback_status);
                     match provider::resolve(&client, &m.title, &m.artist, prefer_netease).await {
                         Ok(Some(lyrics)) => {
                             engine = Some(LyricEngine::new(lyrics));
@@ -89,12 +97,56 @@ async fn main() -> anyhow::Result<()> {
                         }
                         Err(e) => log::error!("lyrics resolve error: {e}"),
                     }
+                    // 歌曲切换 → 用 SMTC 上报的 position 重新校准
+                    tracked_position = m.position;
+                    track_anchor = if is_playing { Some(Instant::now()) } else { None };
+                    last_status_playing = is_playing;
                 }
 
-                if m.playback_status.is_active() {
+                // 状态变化时校准
+                if is_playing && !last_status_playing {
+                    // 从暂停/停止恢复播放 → 保持冻结位置，重启计时器
+                    track_anchor = Some(Instant::now());
+                } else if !is_playing && last_status_playing {
+                    // 暂停/停止 → 冻结位置
+                    if let Some(anchor) = track_anchor {
+                        tracked_position = tracked_position.saturating_add(anchor.elapsed());
+                    }
+                    track_anchor = None;
+                } else if is_playing {
+                    // 持续播放 → 用 SMTC position 校准（如果它在前进的话）
+                    if m.position > Duration::ZERO {
+                        let tracked_elapsed = track_anchor
+                            .map(|a| tracked_position.saturating_add(a.elapsed()))
+                            .unwrap_or(tracked_position);
+                        let diff = if m.position > tracked_elapsed {
+                            m.position - tracked_elapsed
+                        } else {
+                            tracked_elapsed - m.position
+                        };
+                        if diff < Duration::from_secs(2) || tracked_elapsed < Duration::from_secs(1) {
+                            tracked_position = m.position;
+                            track_anchor = Some(Instant::now());
+                        }
+                    }
+                }
+                last_status_playing = is_playing;
+
+                // 计算最终用于歌词同步的位置
+                let effective_position = if is_playing {
+                    track_anchor
+                        .map(|a| tracked_position.saturating_add(a.elapsed()))
+                        .unwrap_or(tracked_position)
+                } else {
+                    tracked_position
+                };
+
+                if is_playing {
                     if let Some(eng) = &engine {
-                        let (main, sub) = eng.current_pair(m.position);
-                        overlay.set_text(&main, &sub);
+                        let main = eng.current_text(effective_position);
+                        log::debug!("[sync] effective={:?} smtc_pos={:?} text={:?}",
+                            effective_position, m.position, main);
+                        overlay.set_text(&main, "");
                     }
                 } else {
                     overlay.set_text("", "");
@@ -104,6 +156,8 @@ async fn main() -> anyhow::Result<()> {
                 if !last_key.is_empty() {
                     last_key = String::new();
                     engine = None;
+                    track_anchor = None;
+                    tracked_position = Duration::ZERO;
                     tray.set_tooltip("LyricBar - 歌词悬浮条");
                 }
                 overlay.set_text("", "");
