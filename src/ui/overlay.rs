@@ -1,30 +1,31 @@
-//! 透明、可点击穿透的歌词窗口，创建时直接以 WS_CHILD 嵌入 Shell_TrayWnd，
-//! 使用 UpdateLayeredWindow 渲染，确保 DWM 合成管线能正确绘制。
+//! 歌词悬浮窗口，复刻 Tauri 的 DwmEnableBlurBehindWindow 方案，
+//! 创建 WS_POPUP 顶层窗口后 SetParent 嵌入 Shell_TrayWnd。
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use windows::core::w;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject,
-    EndPaint, GetDC, ReleaseDC, ScreenToClient, SelectObject, SetBkMode, SetTextColor,
-    BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET,
-    DEFAULT_QUALITY, DEFAULT_PITCH, DIB_RGB_COLORS, DT_CENTER, DT_END_ELLIPSIS, DT_SINGLELINE,
-    DT_VCENTER, OUT_DEFAULT_PRECIS, PAINTSTRUCT, RGBQUAD, TRANSPARENT, AC_SRC_ALPHA, AC_SRC_OVER,
+    BeginPaint, CreateFontW, CreateRectRgn, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
+    FillRect, InvalidateRect, ScreenToClient, SelectObject, SetBkMode, SetTextColor,
+    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY, DEFAULT_PITCH,
+    DT_CENTER, DT_END_ELLIPSIS, DT_SINGLELINE, DT_VCENTER, DT_BOTTOM, DT_TOP, OUT_DEFAULT_PRECIS,
+    PAINTSTRUCT, TRANSPARENT,
 };
+use windows::Win32::Graphics::Dwm::{DwmEnableBlurBehindWindow, DWM_BLURBEHIND, DWM_BB_ENABLE, DWM_BB_BLURREGION};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Shell::{ABM_GETTASKBARPOS, APPBARDATA, SHAppBarMessage};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowExW, FindWindowW,
-    GetMessageW, GetWindowLongPtrW, GetWindowRect, MoveWindow,
-    RegisterClassW, SetTimer, SetWindowLongPtrW, SetParent, TranslateMessage, UpdateLayeredWindow,
-    GWLP_USERDATA, MSG, UPDATE_LAYERED_WINDOW_FLAGS, WNDCLASSW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_POPUP, WM_DESTROY, WM_PAINT, WM_TIMER,
+    GetMessageW, GetClientRect, GetWindowLongPtrW, GetWindowRect, MoveWindow, RegisterClassW,
+    SetTimer, SetWindowLongPtrW, SetParent, ShowWindow, TranslateMessage,
+    GWLP_USERDATA, MSG, SW_SHOWNA, WNDCLASSW, WS_EX_NOACTIVATE,
+    WS_POPUP, WS_VISIBLE, WS_CLIPSIBLINGS, WM_DESTROY, WM_PAINT, WM_TIMER,
 };
 
-/// 用于调试的浅灰色背景（0x00404040 = RGB(64,64,64)）。
+/// 背景色（浅灰，用于调试确认窗口可见）
 const BG_COLOR: u32 = 0x00404040;
 const CLASS_NAME: windows::core::PCWSTR = w!("LyricBarOverlay");
 pub const LOGICAL_WIDTH: f64 = 240.0;
@@ -54,6 +55,21 @@ fn rgb(r: u8, g: u8, b: u8) -> u32 {
     (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
 }
 
+/// 复刻 Tauri tao/window.rs:1284-1297 的 DwmEnableBlurBehindWindow 调用。
+/// 使用空 region 启用 DWM 合成，使窗口内容能被 DWM 正确渲染。
+unsafe fn enable_dwm_blur(hwnd: HWND) {
+    let region = CreateRectRgn(0, 0, -1, -1); // 空 region
+    let bb = DWM_BLURBEHIND {
+        dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION,
+        fEnable: windows::core::BOOL(1),
+        hRgnBlur: region,
+        fTransitionOnMaximized: windows::core::BOOL(0),
+    };
+    let _ = DwmEnableBlurBehindWindow(hwnd, &bb);
+    let _ = DeleteObject(region.into());
+    log::debug!("overlay: DwmEnableBlurBehindWindow 已调用");
+}
+
 /// 在任务栏内定位窗口（Shell_TrayWnd 客户区坐标）。
 fn reposition_in_taskbar(hwnd: HWND) {
     unsafe {
@@ -74,7 +90,6 @@ fn reposition_in_taskbar(hwnd: HWND) {
         }
         let horizontal = (abd.rc.right - abd.rc.left) > (abd.rc.bottom - abd.rc.top);
 
-        // 获取 TrayNotifyWnd 在 Shell_TrayWnd 客户区中的位置
         let tray = FindWindowExW(Some(taskbar), None, w!("TrayNotifyWnd"), None);
         let (tx, ty, th) = match tray {
             Ok(t) if !t.is_invalid() => {
@@ -114,127 +129,68 @@ fn reposition_in_taskbar(hwnd: HWND) {
     }
 }
 
-/// 使用 UpdateLayeredWindow 渲染窗口内容到 DWM 合成表面。
-unsafe fn update_layered(hwnd: HWND, state: &OverlayState) {
-    let hdc_screen = GetDC(None);
-    if hdc_screen.is_invalid() { return; }
-    let hdc_mem = CreateCompatibleDC(Some(hdc_screen));
-    if hdc_mem.is_invalid() {
-        let _ = ReleaseDC(None, hdc_screen);
-        return;
-    }
-
-    let mut rect = RECT::default();
-    let _ = GetWindowRect(hwnd, &mut rect);
-    let w = rect.right - rect.left;
-    let h = rect.bottom - rect.top;
-    if w <= 0 || h <= 0 {
-        let _ = DeleteDC(hdc_mem);
-        let _ = ReleaseDC(None, hdc_screen);
-        return;
-    }
-
-    let mut bmi = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: w,
-            biHeight: -h,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: 0,
-            ..Default::default()
-        },
-        bmiColors: [RGBQUAD::default(); 1],
-    };
-    let mut pixels: *mut std::ffi::c_void = std::ptr::null_mut();
-    let hbitmap = match CreateDIBSection(
-        Some(hdc_mem),
-        &bmi,
-        DIB_RGB_COLORS,
-        &mut pixels,
-        None,
-        0,
-    ) {
-        Ok(h) if !h.is_invalid() => h,
-        _ => {
-            let _ = DeleteDC(hdc_mem);
-            let _ = ReleaseDC(None, hdc_screen);
+/// 使用 GDI WM_PAINT 绘制窗口内容（标准 DWM 合成路径）。
+fn paint_window(hwnd: HWND, state: &OverlayState) {
+    unsafe {
+        let mut ps = PAINTSTRUCT::default();
+        let hdc = BeginPaint(hwnd, &mut ps);
+        if hdc.is_invalid() {
             return;
         }
-    };
-    let old_bmp = SelectObject(hdc_mem, hbitmap.into());
 
-    // 绘制灰色背景
-    let pixel_slice = std::slice::from_raw_parts_mut(pixels as *mut u32, (w * h) as usize);
-    pixel_slice.fill(BG_COLOR);
+        let mut rect = RECT::default();
+        let _ = GetClientRect(hwnd, &mut rect);
+        let w = rect.right - rect.left;
+        let h = rect.bottom - rect.top;
 
-    // 绘制文字
-    if !state.text.is_empty() || !state.subtext.is_empty() {
-        SetBkMode(hdc_mem, TRANSPARENT);
-        SetTextColor(hdc_mem, windows::Win32::Foundation::COLORREF(rgb(255, 255, 255)));
+        // 绘制灰色背景
+        let brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(BG_COLOR));
+        let _ = FillRect(hdc, &rect, brush);
+        let _ = DeleteObject(brush.into());
 
-        let face = to_wide("Microsoft YaHei");
-        let font = CreateFontW(
-            16, 0, 0, 0, 700, 0, 0, 0,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            DEFAULT_QUALITY, DEFAULT_PITCH.0 as u32,
-            windows::core::PCWSTR(face.as_ptr()),
-        );
-        let old_font = SelectObject(hdc_mem, font.into());
+        // 绘制文字
+        if !state.text.is_empty() || !state.subtext.is_empty() {
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, windows::Win32::Foundation::COLORREF(rgb(255, 255, 255)));
 
-        if state.subtext.is_empty() {
-            let mut wide = to_wide(&state.text);
-            let mut draw_rect = RECT { left: 0, top: 0, right: w, bottom: h };
-            windows::Win32::Graphics::Gdi::DrawTextW(
-                hdc_mem, &mut wide, &mut draw_rect,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+            let face = to_wide("Microsoft YaHei");
+            let font = CreateFontW(
+                16, 0, 0, 0, 700, 0, 0, 0,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                DEFAULT_QUALITY, DEFAULT_PITCH.0 as u32,
+                windows::core::PCWSTR(face.as_ptr()),
             );
-        } else {
-            let mid = h / 2;
-            let mut wtext = to_wide(&state.text);
-            let mut top_rect = RECT { left: 0, top: 0, right: w, bottom: mid };
-            windows::Win32::Graphics::Gdi::DrawTextW(
-                hdc_mem, &mut wtext, &mut top_rect,
-                DT_CENTER | windows::Win32::Graphics::Gdi::DT_BOTTOM | DT_SINGLELINE | DT_END_ELLIPSIS,
-            );
-            let mut wsub = to_wide(&state.subtext);
-            let mut bot_rect = RECT { left: 0, top: mid, right: w, bottom: h };
-            windows::Win32::Graphics::Gdi::DrawTextW(
-                hdc_mem, &mut wsub, &mut bot_rect,
-                DT_CENTER | windows::Win32::Graphics::Gdi::DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS,
-            );
+            let old_font = SelectObject(hdc, font.into());
+
+            if state.subtext.is_empty() {
+                let mut wide = to_wide(&state.text);
+                let mut draw_rect = RECT { left: 0, top: 0, right: w, bottom: h };
+                    DrawTextW(
+                    hdc, &mut wide, &mut draw_rect,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+                );
+            } else {
+                let mid = h / 2;
+                let mut wtext = to_wide(&state.text);
+                let mut top_rect = RECT { left: 0, top: 0, right: w, bottom: mid };
+                DrawTextW(
+                    hdc, &mut wtext, &mut top_rect,
+                    DT_CENTER | DT_BOTTOM | DT_SINGLELINE | DT_END_ELLIPSIS,
+                );
+                let mut wsub = to_wide(&state.subtext);
+                let mut bot_rect = RECT { left: 0, top: mid, right: w, bottom: h };
+                DrawTextW(
+                    hdc, &mut wsub, &mut bot_rect,
+                    DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS,
+                );
+            }
+
+            let _ = SelectObject(hdc, old_font);
+            let _ = DeleteObject(font.into());
         }
 
-        let _ = SelectObject(hdc_mem, old_font);
-        let _ = DeleteObject(font.into());
+        let _ = EndPaint(hwnd, &ps);
     }
-
-    let pt_src = POINT { x: 0, y: 0 };
-    let mut ppt_dst = POINT { x: rect.left, y: rect.top };
-    let mut size = SIZE { cx: w, cy: h };
-    let blend = BLENDFUNCTION {
-        BlendOp: AC_SRC_OVER as u8,
-        BlendFlags: 0,
-        SourceConstantAlpha: 255,
-        AlphaFormat: AC_SRC_ALPHA as u8,
-    };
-
-    let _ = UpdateLayeredWindow(
-        hwnd,
-        Some(hdc_screen),
-        Some(&ppt_dst),
-        Some(&size),
-        Some(hdc_mem),
-        Some(&pt_src),
-        windows::Win32::Foundation::COLORREF(0),
-        Some(&blend),
-        UPDATE_LAYERED_WINDOW_FLAGS(2), // ULW_ALPHA
-    );
-
-    let _ = SelectObject(hdc_mem, old_bmp);
-    let _ = DeleteObject(hbitmap.into());
-    let _ = DeleteDC(hdc_mem);
-    let _ = ReleaseDC(None, hdc_screen);
 }
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -249,21 +205,23 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     }
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match msg {
         WM_PAINT => {
-            let mut ps = PAINTSTRUCT::default();
-            unsafe {
-                let _ = BeginPaint(hwnd, &mut ps);
-                let _ = EndPaint(hwnd, &mut ps);
+            let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize };
+            if raw != 0 {
+                let state_ref = unsafe { &*(raw as *const Mutex<OverlayState>) };
+                let guard = state_ref.lock().unwrap();
+                paint_window(hwnd, &guard);
             }
             LRESULT(0)
         }
         WM_TIMER => {
             unsafe {
                 reposition_in_taskbar(hwnd);
+                // Timer 时也重绘（文字可能变化）
                 let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize;
                 if raw != 0 {
                     let state_ref = &*(raw as *const Mutex<OverlayState>);
                     let guard = state_ref.lock().unwrap();
-                    update_layered(hwnd, &guard);
+                    paint_window(hwnd, &guard);
                 }
             }
             LRESULT(0)
@@ -301,7 +259,7 @@ impl Overlay {
         std::thread::spawn(move || unsafe {
             let hinst = GetModuleHandleW(None).unwrap_or_default();
 
-            // 查找 Shell_TrayWnd 作为父窗口
+            // 查找 Shell_TrayWnd
             let taskbar = match FindWindowW(w!("Shell_TrayWnd"), None) {
                 Ok(t) if !t.is_invalid() => t,
                 _ => {
@@ -311,12 +269,15 @@ impl Overlay {
             };
             log::debug!("overlay: 找到 Shell_TrayWnd {:?}", taskbar);
 
-            // 先创建 WS_POPUP 顶层窗口（无父窗口），之后再 SetParent 嵌入任务栏
+            // 复刻 Tauri 的窗口创建方式：
+            // 1. WS_POPUP（无标题栏/边框）+ WS_VISIBLE + WS_CLIPSIBLINGS
+            // 2. 无 WS_EX_LAYERED（用 DwmEnableBlurBehindWindow 代替）
+            // 3. 仅 WS_EX_NOACTIVATE 防止抢焦点
             let hwnd = match CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
+                WS_EX_NOACTIVATE,
                 CLASS_NAME,
                 windows::core::PCWSTR::null(),
-                WS_POPUP,
+                WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS,
                 0, 0, 240, 28,
                 None,
                 None,
@@ -335,20 +296,27 @@ impl Overlay {
             }
             log::debug!("overlay: WS_POPUP 窗口创建成功 hwnd={:?}", hwnd);
 
-            // 将窗口嵌入 Shell_TrayWnd
+            // 复刻 Tauri 的 DwmEnableBlurBehindWindow（启用 DWM 合成）
+            enable_dwm_blur(hwnd);
+
+            // SetParent 嵌入任务栏
             let prev = SetParent(hwnd, Some(taskbar));
             log::debug!("overlay: SetParent 返回 {:?}", prev);
 
+            // 复刻 sysmon：SetParent 后用 SW_SHOWNA 显示（不激活）
+            let _ = ShowWindow(hwnd, SW_SHOWNA);
+
+            // 存储 state 引用
             let leaked = Arc::into_raw(state_thread.clone());
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, leaked as isize);
 
-            // 初始定位 + 渲染
+            // 初始定位 + 重绘
             reposition_in_taskbar(hwnd);
             let state_ref = &*leaked;
             let guard = state_ref.lock().unwrap();
-            update_layered(hwnd, &guard);
+            paint_window(hwnd, &guard);
             drop(guard);
-            log::debug!("overlay: 初始定位 + UpdateLayeredWindow 完成");
+            log::debug!("overlay: 初始定位 + 绘制完成");
 
             // 定时器：周期性重定位 + 重绘
             SetTimer(Some(hwnd), 1, 200, None);
@@ -376,9 +344,9 @@ impl Overlay {
             let hwnd = HWND(v as *mut std::ffi::c_void);
             if !hwnd.is_invalid() {
                 log::debug!("set_text: 更新内容主={:?} 副={:?}", text, subtext);
+                // 触发重绘
                 unsafe {
-                    let guard = self.state.lock().unwrap();
-                    update_layered(hwnd, &guard);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
             }
         }
