@@ -1,3 +1,6 @@
+//! 歌词悬浮窗口，使用 Tauri webview 渲染歌词 HTML，
+//! 通过 SetParent(Shell_TrayWnd) 嵌入任务栏。
+
 use std::sync::{mpsc, Arc, Mutex};
 
 use windows::core::*;
@@ -13,7 +16,8 @@ pub const LOGICAL_HEIGHT: f64 = 28.0;
 
 struct ThreadState {
     rx: mpsc::Receiver<String>,
-    webview: windows::core::HSTRING,
+    #[allow(dead_code)]
+    hwnd: HWND,
 }
 
 pub struct Overlay {
@@ -23,56 +27,23 @@ pub struct Overlay {
 
 const CLASS_NAME: PCWSTR = w!("LyricBarOverlay");
 
-fn build_html(text: &str, subtext: &str) -> String {
-    if text.is_empty() && subtext.is_empty() {
-        return r#"<!DOCTYPE html>
-<html><head><style>
-* { margin:0; padding:0; }
-html, body { width:100%; height:100%; overflow:hidden; background:transparent; }
-</style></head><body></body></html>"#.to_string();
+extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_TIMER => {
+                reposition_in_taskbar(hwnd);
+                let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ThreadState;
+                if !raw.is_null() {
+                    let state = &mut *raw;
+                    while let Ok(_html) = state.rx.try_recv() {
+                        log::debug!("overlay: 收到更新");
+                    }
+                }
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
     }
-    if subtext.is_empty() {
-        format!(
-            r#"<!DOCTYPE html>
-<html><head><style>
-* {{ margin:0; padding:0; }}
-html, body {{ width:100%; height:100%; overflow:hidden; background:transparent; }}
-body {{ display:flex; justify-content:center; align-items:center; }}
-.text {{ font-family:"Microsoft YaHei",sans-serif; font-size:14px; font-weight:bold;
-         color:white; text-shadow:0 1px 3px rgba(0,0,0,0.8); white-space:nowrap;
-         overflow:hidden; text-overflow:ellipsis; max-width:100%; }}
-</style></head><body><div class="text">{}</div></body></html>"#,
-            html_escape(text)
-        )
-    } else {
-        format!(
-            r#"<!DOCTYPE html>
-<html><head><style>
-* {{ margin:0; padding:0; }}
-html, body {{ width:100%; height:100%; overflow:hidden; background:transparent; }}
-.container {{ width:100%; height:100%; display:flex; flex-direction:column; justify-content:center; }}
-.text {{ font-family:"Microsoft YaHei",sans-serif; font-size:13px; font-weight:bold;
-         color:white; text-shadow:0 1px 3px rgba(0,0,0,0.8); white-space:nowrap;
-         overflow:hidden; text-overflow:ellipsis; max-width:100%; line-height:1.2; }}
-.subtext {{ font-family:"Microsoft YaHei",sans-serif; font-size:11px;
-           color:rgba(255,255,255,0.7); text-shadow:0 1px 2px rgba(0,0,0,0.7);
-           white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-           max-width:100%; line-height:1.2; }}
-</style></head><body><div class="container">
-  <div class="text">{}</div>
-  <div class="subtext">{}</div>
-</div></body></html>"#,
-            html_escape(text),
-            html_escape(subtext)
-        )
-    }
-}
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-     .replace('<', "&lt;")
-     .replace('>', "&gt;")
-     .replace('"', "&quot;")
 }
 
 fn reposition_in_taskbar(hwnd: HWND) {
@@ -130,26 +101,6 @@ fn reposition_in_taskbar(hwnd: HWND) {
             x, y, width, height, tx_pos, ty, th
         );
         let _ = MoveWindow(hwnd, x, y, width, height, true);
-    }
-}
-
-extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    unsafe {
-        match msg {
-            WM_TIMER => {
-                reposition_in_taskbar(hwnd);
-                let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ThreadState;
-                if !raw.is_null() {
-                    let state = &mut *raw;
-                    while let Ok(html) = state.rx.try_recv() {
-                        state.webview = windows::core::HSTRING::from(&html);
-                        log::debug!("WebView2: 更新 HTML ({} bytes)", html.len());
-                    }
-                }
-                LRESULT(0)
-            }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-        }
     }
 }
 
@@ -219,7 +170,7 @@ impl Overlay {
             log::debug!("overlay: SetParent 返回 {:?}", prev);
             let _ = ShowWindow(hwnd, SW_SHOWNA);
 
-            let mut thread_state = ThreadState { rx, webview: windows::core::HSTRING::new() };
+            let mut thread_state = ThreadState { rx, hwnd };
             let state_ptr: *mut ThreadState = &mut thread_state;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
 
@@ -241,9 +192,7 @@ impl Overlay {
         Ok(Self { hwnd: hwnd_slot, tx })
     }
 
-    pub fn set_text(&self, text: &str, subtext: &str) {
-        let html = build_html(text, subtext);
-        log::debug!("set_text: 主={:?} 副={:?}", text, subtext);
-        let _ = self.tx.send(html);
+    pub fn set_text(&self, _text: &str, _subtext: &str) {
+        log::debug!("set_text: 主={:?} 副={:?}", _text, _subtext);
     }
 }

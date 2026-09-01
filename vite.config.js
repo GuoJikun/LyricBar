@@ -7,6 +7,9 @@ export default defineConfig({
   server: {
     port: 6699,
     strictPort: true,
+    watch: {
+      ignored: ['**/src-tauri/**'],
+    },
   },
   envPrefix: ['VITE_', 'TAURI_'],
 })

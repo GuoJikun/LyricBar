@@ -10,20 +10,7 @@
     "beforeBuildCommand": "pnpm build"
   },
   "app": {
-    "windows": [
-      {
-        "label": "lyric",
-        "title": "LyricBar",
-        "transparent": true,
-        "decorations": false,
-        "skipTaskbar": true,
-        "width": 240,
-        "height": 28,
-        "resizable": false,
-        "alwaysOnTop": true,
-        "visible": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

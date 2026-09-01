@@ -9,7 +9,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-log = "2"
-windows = { version = "0.62", features = [
+windows = { version = "0.61", features = [
     "Foundation",
     "Foundation_Collections",
     "Media_Control",

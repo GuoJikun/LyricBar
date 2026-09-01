@@ -1,7 +1,7 @@
 mod crash;
 mod lyrics;
-mod overlay;
 mod smtc;
+mod taskbar_window;
 
 use std::time::{Duration, Instant};
 
@@ -27,12 +27,15 @@ pub fn run() {
                 .level(log::LevelFilter::Debug)
                 .build(),
         )
+        .invoke_handler(tauri::generate_handler![taskbar_window::embed_lyric_window])
         .setup(|app| {
             log::info!("========================================");
             log::info!("LyricBar 已启动");
             log::info!("========================================");
 
             crash::install();
+
+            taskbar_window::create_lyric_window(app)?;
 
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

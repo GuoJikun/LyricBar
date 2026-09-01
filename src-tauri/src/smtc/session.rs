@@ -24,14 +24,14 @@ pub struct Smtc {
 
 impl Smtc {
     pub async fn new() -> anyhow::Result<Self> {
-        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.await?;
+        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.get()?;
         Ok(Self { manager })
     }
 
     pub async fn current(&self) -> anyhow::Result<Option<MediaMetadata>> {
         let session = self.manager.GetCurrentSession()?;
 
-        let props = session.TryGetMediaPropertiesAsync()?.await?;
+        let props = session.TryGetMediaPropertiesAsync()?.get()?;
         let title = props.Title()?.to_string();
         let artist = props.Artist()?.to_string();
         let album = props.AlbumTitle()?.to_string();
