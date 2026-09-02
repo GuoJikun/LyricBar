@@ -8,5 +8,17 @@ body { display:flex; justify-content:center; align-items:center; }
          overflow:hidden; text-overflow:ellipsis; max-width:100%; }
 </style></head><body>
 <div id="lyric" class="text"></div>
-<script type="module" src="./lyric.js"></script>
+<script>
+(async function() {
+  const el = document.getElementById('lyric');
+  const { invoke } = window.__TAURI__.core;
+  const { listen } = window.__TAURI__.event;
+
+  await invoke('embed_lyric_window');
+
+  listen('lyric-update', (event) => {
+    el.textContent = event.payload;
+  });
+})();
+</script>
 </body></html>
