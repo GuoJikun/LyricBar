@@ -1,7 +1,3 @@
 <template>
-  <LyricDisplay />
+  <router-view />
 </template>
-
-<script setup>
-import LyricDisplay from './components/LyricDisplay.vue'
-</script>

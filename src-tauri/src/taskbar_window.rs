@@ -29,7 +29,7 @@ pub fn create_lyric_window(app: &tauri::App) -> Result<(), Box<dyn std::error::E
     let _win = WebviewWindowBuilder::new(
         app,
         "lyric",
-        WebviewUrl::App("lyric.html".into()),
+        WebviewUrl::App("lyric".into()),
     )
     .title("LyricBar")
     .inner_size(LOGICAL_WIDTH, LOGICAL_HEIGHT)

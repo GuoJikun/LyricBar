@@ -13,12 +13,4 @@ export default defineConfig({
     },
   },
   envPrefix: ['VITE_', 'TAURI_'],
-  build: {
-    rollupOptions: {
-      input: {
-        main: resolve(__dirname, 'index.html'),
-        lyric: resolve(__dirname, 'lyric.html'),
-      },
-    },
-  },
 })
