@@ -4,8 +4,6 @@ use std::time::Duration;
 pub struct MediaMetadata {
     pub title: String,
     pub artist: String,
-    pub album: String,
-    pub album_artist: String,
     pub source_app: String,
     pub playback_status: PlaybackStatus,
     pub position: Duration,

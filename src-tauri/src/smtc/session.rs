@@ -34,8 +34,6 @@ impl Smtc {
         let props = session.TryGetMediaPropertiesAsync()?.get()?;
         let title = props.Title()?.to_string();
         let artist = props.Artist()?.to_string();
-        let album = props.AlbumTitle()?.to_string();
-        let album_artist = props.AlbumArtist()?.to_string();
 
         let source_app = session.SourceAppUserModelId()?.to_string();
 
@@ -68,8 +66,6 @@ impl Smtc {
         Ok(Some(MediaMetadata {
             title,
             artist,
-            album,
-            album_artist,
             source_app,
             playback_status,
             position,

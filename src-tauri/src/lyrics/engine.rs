@@ -50,19 +50,5 @@ impl LyricEngine {
         }
     }
 
-    pub fn current_pair(&self, position: Duration) -> (String, String) {
-        match self.current_line(position) {
-            Some(i) => {
-                let main = self.lyrics.lines[i].text.clone();
-                let next = self
-                    .lyrics
-                    .lines
-                    .get(i + 1)
-                    .map(|l| l.text.clone())
-                    .unwrap_or_default();
-                (main, next)
-            }
-            None => (String::new(), String::new()),
-        }
-    }
+
 }
